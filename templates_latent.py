@@ -145,6 +145,7 @@ def source_latent():
     conf = latent_diffusion128_config(conf)
     conf = latent_128_batch_size(conf)
     conf = latent_mlp_2048_norm_20layers(conf)
+    conf.denoised_T = 10
     conf.total_samples = 2_001_000_000
     conf.latent_beta_scheduler = 'const0.008'
     conf.latent_loss_type = LossType.l1

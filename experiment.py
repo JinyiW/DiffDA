@@ -24,6 +24,10 @@ from lmdb_writer import *
 from metrics import *
 from renderer import *
 
+from sklearn.metrics import confusion_matrix
+from uda import network
+
+
 
 class LitModel(pl.LightningModule):
     def __init__(self, conf: TrainConfig):
@@ -72,9 +76,9 @@ class LitModel(pl.LightningModule):
             print('step:', state['global_step'])
             self.load_state_dict(state['state_dict'], strict=False)
 
-        if conf.latent_infer_path is not None:
+        if conf.source_latent_path is not None:
             print('loading latent stats ...')
-            state = torch.load(conf.latent_infer_path)
+            state = torch.load(conf.source_latent_path)
             self.conds = state['conds']
             self.register_buffer('conds_mean', state['conds_mean'][None, :]) 
             self.register_buffer('conds_std', state['conds_std'][None, :])
@@ -347,7 +351,7 @@ class LitModel(pl.LightningModule):
 
                     conds.append(cond[argsort].cpu())
                 # break
-        model.train()
+        model.train() 
         # (N, c) cpu
 
         conds = torch.cat(conds).float()
@@ -674,6 +678,52 @@ class LitModel(pl.LightningModule):
         per_rank = n // world_size
         return x[rank * per_rank:(rank + 1) * per_rank]
 
+    def set_netB_C(self,):
+
+        netB = network.feat_bootleneck(type=self.conf.classifier, feature_dim=2048, bottleneck_dim=self.conf.bottleneck).cuda()
+        modelpath = self.conf.output_dir_src + '/source_B.pt'   
+        netB.load_state_dict(torch.load(modelpath))
+        netB.eval()
+        self.netB = netB
+
+        netC = network.feat_classifier(type=self.conf.layer, class_num = self.conf.class_num, bottleneck_dim=self.conf.bottleneck).cuda()
+        modelpath = self.conf.output_dir_src + '/source_C.pt'    
+        netC.load_state_dict(torch.load(modelpath))
+        netC.eval()
+        self.netC = netC
+
+    def cal_acc(self, loader, flag=False):
+        self.set_netB_C
+        start_test = True
+        with torch.no_grad():
+            iter_test = iter(loader)
+            for i in range(len(loader)):
+                data = iter_test.next()
+                inputs = data[0]
+                labels = data[1]
+                inputs = inputs.cuda()
+                outputs = self.netC(self.netB(inputs))
+                if start_test:
+                    all_output = outputs.float().cpu()
+                    all_label = labels.float()
+                    start_test = False
+                else:
+                    all_output = torch.cat((all_output, outputs.float().cpu()), 0)
+                    all_label = torch.cat((all_label, labels.float()), 0)
+        _, predict = torch.max(all_output, 1)
+        accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
+        # mean_ent = torch.mean(loss.Entropy(nn.Softmax(dim=1)(all_output))).cpu().data.item()
+        if flag:
+            matrix = confusion_matrix(all_label, torch.squeeze(predict).float())
+            matrix = matrix[np.unique(all_label).astype(int),:]
+            acc = matrix.diagonal()/matrix.sum(axis=1) * 100
+            aacc = acc.mean()
+            aa = [str(np.round(i, 2)) for i in acc]
+            acc = ' '.join(aa)
+            return aacc, acc
+        else:
+            return accuracy*100, _
+
     def test_step(self, batch, *args, **kwargs):
         """
         for the "eval" mode. 
@@ -710,6 +760,36 @@ class LitModel(pl.LightningModule):
                         'conds_mean': conds_mean,
                         'conds_std': conds_std,
                     }, save_path)
+        """
+        "eval_target_domain" = evaluate the model on the target domain
+        """
+        # eval_target_domain is the only program that is run on the target domain
+        for each in self.conf.eval_programs:
+            if each.startswith('eval_target_domain'):
+                m = re.match(r'eval_target_domain([0-9]+)', each)
+                if m is not None:
+                    T_latent = int(m[1])
+                    self.setup()
+                    print(f'eval_target_domain {T_latent} ...')
+                    if T_latent is not None:
+                        latent_sampler = self.conf._make_latent_diffusion_conf(
+                            T=T_latent).make_sampler()
+                    self.ema_model.eval()
+
+                    # load the target domain latent samples
+                    if self.conf.target_latent_path is not None:
+                        print('loading latent latent stats ...')
+                        state = torch.load(self.conf.target_latent_path)
+                        loader = state['conds']
+                    target_latent_loader = DataLoader(loader,batch_size=self.conf.batch_size_eval,shuffle=False)
+                    
+                    for target_latent in tqdm(target_latent_loader, total=len(target_latent_loader), desc='eval_target_domain'):
+                        out = latent_sampler.sample(model=self.ema_model,
+                            noise=target_latent,
+                            clip_denoised=conf.latent_clip_sample,)
+                        all_out = torch.cat((all_out, out.float().cpu()), 0)
+                    self.set_netB_C()
+                    acc_tar, _ = self.cal_acc(all_out, False)
         """
         "infer+render" = predict the latent variables using the encoder on the whole dataset
         THIS ALSO GENERATE CORRESPONDING IMAGES
@@ -758,7 +838,7 @@ class LitModel(pl.LightningModule):
                     T_latent = int(m[2])
                     print(f'evaluating FID T = {T}... latent T = {T_latent}')
                 else:
-                    m = re.match(r'fidclip\(([0-9]+),([0-9]+)\)', each)
+                    m = re.match(r'fidclip\(([0-9]+),([0-9]+)\)', each) # eval(T1,T2)
                     if m is not None:
                         # fidclip(T1,T2)
                         T = int(m[1])

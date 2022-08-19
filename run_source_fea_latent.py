@@ -20,6 +20,13 @@ if __name__ == '__main__':
     conf = source_latent()
     train(conf, gpus=gpus)
 
+    # evaluate the latent DPM in the target domain
+    # NOTE: only need a single gpu
+    gpus = [3]
+    conf.eval_programs = ['target_domain_eval']
+    train(conf, gpus=gpus, mode='eval')
+
+
     # # unconditional sampling score
     # # NOTE: a lot of gpus can speed up this process
     # gpus = [0, 1, 2, 3]

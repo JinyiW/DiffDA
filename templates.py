@@ -312,4 +312,5 @@ def pretrain_DA():
     conf = DA_autoenc()
     conf.pretrain = None
     conf.latent_infer_path = f'checkpoints/{DA_autoenc().name}/latent.pkl'
+    conf.target_latent_path = f'checkpoints/{DA_autoenc().name}/target_latent.pkl'
     return conf
