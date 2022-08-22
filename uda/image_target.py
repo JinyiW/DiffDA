@@ -190,10 +190,12 @@ def save_features(args,if_save_source=True):
         print(f'conds_mean: {conds_mean.shape}')
     else:
         target_data = dset_loaders["target"]
-        save_target_path = '/GPFS/rhome/jinyiwang/DiffDA/checkpoints/DA_target/target_latent.pkl'
-        for i, (x,y) in enumerate(tqdm(target_data)):
+        save_target_path = f'/GPFS/rhome/jinyiwang/DiffDA/checkpoints/DA_target/{args.name[1]}_latent.pkl'
+        # print(target_data.shape)
+        for i, (x,_,tar_idx) in enumerate(tqdm(target_data)):
+            # print(x)
             x = x.cuda()
-            y = y.cuda()
+            # y = y.cuda()
             f_outputs = netF(x)
             save_data.append(f_outputs.cpu())
         conds = torch.cat(save_data, 0).float()

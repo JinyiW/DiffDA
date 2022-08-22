@@ -150,7 +150,8 @@ def source_latent():
     conf.latent_beta_scheduler = 'const0.008'
     conf.latent_loss_type = LossType.l1
     conf.name = 'DA_source_latent'
-    # conf.conds_path = '/GPFS/rhome/jinyiwang/diffae/datasets/source_feat/source_feat.npy'
+    conf.source_latent_path = f'checkpoints/{DA_autoenc().name}/latent.pkl'
+    conf.target_latent_path = '/GPFS/rhome/jinyiwang/DiffDA/checkpoints/DA_target/C_latent.pkl'
     return conf
 
 
