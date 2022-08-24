@@ -769,14 +769,20 @@ class GaussianDiffusionBeatGans:
         if device is None:
             device = next(model.parameters()).device
         if noise is not None:
-            img = self.q_sample(noise, self.conf.denoised_T)
+            noise.to(device)
+            # img = self.q_sample(x_start = noise, t = t_batch)
+            e = th.randn_like(noise)
+            # print("noise shape", noise.shape)
+            # print(self.sqrt_alphas_cumprod)
+            img =  self.sqrt_alphas_cumprod[self.conf.denoised_T] *  noise + self.sqrt_one_minus_alphas_cumprod[self.conf.denoised_T] * e
+            # print("Diffusion done.")
             # img = noise
         else:
             assert isinstance(shape, (tuple, list))
             img = th.randn(*shape, device=device)
         indices = list(range(self.conf.denoised_T))[::-1]
-        print(f'logging numsteps:{self.num_timesteps}')
-        print(f'logging denoised_T:{self.conf.denoised_T}')
+        # print(f'logging numsteps:{self.num_timesteps}')
+        # print(f'logging denoised_T:{self.conf.denoised_T}')
 
         if progress:
             # Lazy import so that we don't depend on tqdm.

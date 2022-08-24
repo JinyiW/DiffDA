@@ -27,7 +27,8 @@ from renderer import *
 from sklearn.metrics import confusion_matrix
 from uda import network
 
-
+import warnings
+warnings.filterwarnings('ignore')
 
 class LitModel(pl.LightningModule):
     def __init__(self, conf: TrainConfig):
@@ -696,10 +697,12 @@ class LitModel(pl.LightningModule):
         self.set_netB_C
         start_test = True
         with torch.no_grad():
-            iter_test = iter(loader)
-            for i in range(len(loader)):
-                data = iter_test.next()
+            # iter_test = iter(loader)
+            for _, data in tqdm(enumerate(loader), total=len(loader)):
+                # data = iter_test.next()
+                print(f'data.shape:{data.shape}')
                 inputs = data[0]
+                print(f'input_size.shape:{inputs.shape}')
                 labels = data[1]
                 inputs = inputs.cuda()
                 outputs = self.netC(self.netB(inputs))
@@ -766,6 +769,7 @@ class LitModel(pl.LightningModule):
         # eval_target_domain is the only program that is run on the target domain
         for each in self.conf.eval_programs:
             if each.startswith('eval_target_domain'):
+                print('eval_target_domain ...')
                 m = re.match(r'eval_target_domain([0-9]+)', each)
                 if m is not None:
                     T_latent = int(m[1])
@@ -773,23 +777,29 @@ class LitModel(pl.LightningModule):
                     print(f'eval_target_domain {T_latent} ...')
                     if T_latent is not None:
                         latent_sampler = self.conf._make_latent_diffusion_conf(
-                            T=T_latent).make_sampler()
+                            T=T_latent, denoised_T = self.conf.denoised_T).make_sampler()
                     self.ema_model.eval()
 
                     # load the target domain latent samples
                     if self.conf.target_latent_path is not None:
-                        print('loading latent latent stats ...')
+                        print(f'loading latent latent stats from{self.conf.target_latent_path} ...')
                         state = torch.load(self.conf.target_latent_path)
                         loader = state['conds']
                     target_latent_loader = DataLoader(loader,batch_size=self.conf.batch_size_eval,shuffle=False)
-                    
+                    all_out = []
                     for target_latent in tqdm(target_latent_loader, total=len(target_latent_loader), desc='eval_target_domain'):
-                        out = latent_sampler.sample(model=self.ema_model,
+                        target_latent = target_latent.cuda()
+                        out = latent_sampler.sample(model=self.ema_model.latent_net,
                             noise=target_latent,
-                            clip_denoised=conf.latent_clip_sample,)
-                        all_out = torch.cat((all_out, out.float().cpu()), 0)
+                            clip_denoised=self.conf.latent_clip_sample,)
+                        all_out.append(out)
+                    all_out = torch.cat(all_out, dim=0)
+                    torch.save(all_out, f'checkpoints/{self.conf.name}_target/C_latent_diffusion_{self.conf.denoised_T}_{T_latent}.pkl')
                     self.set_netB_C()
+                    all_out = DataLoader(all_out, batch_size=self.conf.batch_size_eval, 
+                        shuffle=False, drop_last=False)
                     acc_tar, _ = self.cal_acc(all_out, False)
+                    print(f'acc_tar: {acc_tar}')
         """
         "infer+render" = predict the latent variables using the encoder on the whole dataset
         THIS ALSO GENERATE CORRESPONDING IMAGES
@@ -1029,7 +1039,7 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
         # perform lpips
         # dummy loader to allow calling "test_step"
         dummy = DataLoader(TensorDataset(torch.tensor([0.] * conf.batch_size)),
-                           batch_size=conf.batch_size)
+                           batch_size=conf.batch_size,num_workers=4)
         eval_path = conf.eval_path or checkpoint_path
         # conf.eval_num_images = 50
         print('loading from:', eval_path)
@@ -1061,3 +1071,7 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
             # pd.DataFrame(out).to_csv(tgt)
     else:
         raise NotImplementedError()
+
+def evalutaion(conf, model):
+    # load the target latent dataset
+    target_latent_dataset = torch.load(conf.target_latent_dataset)

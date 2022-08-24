@@ -22,7 +22,7 @@ def latent_diffusion_config(conf: TrainConfig):
 
 def latent_diffusion128_config(conf: TrainConfig):
     conf = latent_diffusion_config(conf)
-    conf.batch_size_eval = 32
+
     return conf
 
 
@@ -140,18 +140,28 @@ def bedroom128_autoenc_latent():
     conf.name = 'bedroom128_autoenc_latent'
     return conf
 
-def source_latent():
+def DA_latent():
     conf = pretrain_DA()
     conf = latent_diffusion128_config(conf)
     conf = latent_128_batch_size(conf)
-    conf = latent_mlp_2048_norm_20layers(conf)
-    conf.denoised_T = 10
-    conf.total_samples = 2_001_000_000
+    conf = latent_mlp_2048_norm_10layers(conf)
+    conf.denoised_T = 4
+    conf.total_samples = 2304_000
     conf.latent_beta_scheduler = 'const0.008'
     conf.latent_loss_type = LossType.l1
-    conf.name = 'DA_source_latent'
-    conf.source_latent_path = f'checkpoints/{DA_autoenc().name}/latent.pkl'
-    conf.target_latent_path = '/GPFS/rhome/jinyiwang/DiffDA/checkpoints/DA_target/C_latent.pkl'
+    conf.batch_size_eval = 16
+    conf.name = 'DA'
+
+    # DA net B C config
+    conf.classifier = "bn"
+    conf.bottleneck = 256
+    conf.layer = 'wn'
+    conf.class_num = 65
+    conf.output_dir_src = 'uda/ckps/source/uda/office-home/A'
+
+
+    conf.source_latent_path = f'checkpoints/{conf.name}_source/latent.pkl'
+    conf.target_latent_path = f'checkpoints/{conf.name}_target/C_latent.pkl'
     return conf
 
 

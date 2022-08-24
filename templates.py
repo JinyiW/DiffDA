@@ -241,11 +241,10 @@ def bedroom128_autoenc():
 
 def DA_autoenc():
     conf = ffhq128_autoenc_base()
-    conf.data_name = 'DA_source'
+    conf.data_name = 'OfficeHome'
     conf.eval_ema_every_samples = 10_000_000
     conf.eval_every_samples = 10_000_000
     conf.total_samples = 120_000_000
-    conf.name = 'DA_source'
     return conf
 
 def pretrain_celeba64d2c_72M():
@@ -311,6 +310,4 @@ def pretrain_bedroom128():
 def pretrain_DA():
     conf = DA_autoenc()
     conf.pretrain = None
-    # conf.latent_infer_path = f'checkpoints/{DA_autoenc().name}/latent.pkl'
-    conf.target_latent_path = f'checkpoints/{DA_autoenc().name}/target_latent.pkl'
     return conf

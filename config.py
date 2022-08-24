@@ -231,7 +231,7 @@ class TrainConfig(BaseConfig):
         else:
             raise NotImplementedError()
 
-    def _make_latent_diffusion_conf(self, T=None):
+    def _make_latent_diffusion_conf(self, T=None, denoised_T = None):
         # can use T < self.T for evaluation
         # follows the guided-diffusion repo conventions
         # t's are evenly spaced
@@ -256,6 +256,7 @@ class TrainConfig(BaseConfig):
             use_timesteps=space_timesteps(num_timesteps=self.T,
                                           section_counts=section_counts),
             fp16=self.fp16,
+            denoised_T = denoised_T
         )
 
     @property

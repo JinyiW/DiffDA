@@ -60,6 +60,7 @@ def space_timesteps(num_timesteps, section_counts):
 @dataclass
 class SpacedDiffusionBeatGansConfig(GaussianDiffusionBeatGansConfig):
     use_timesteps: Tuple[int] = None
+    denoised_T: int = None
 
     def make_sampler(self):
         return SpacedDiffusionBeatGans(self)
