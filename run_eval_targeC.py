@@ -22,9 +22,11 @@ if __name__ == '__main__':
 
     # evaluate the latent DPM in the target domain
     # NOTE: only need a single gpu
-    gpus = [1]
-    conf.eval_programs = ['eval_target_domain10']
-    train(conf, gpus=gpus, mode='eval')
+    gpus = [2]
+    for i in range(4):
+        conf.eval_programs = ['eval_target_domain100']
+        conf.denoised_T = i+1
+        train(conf, gpus=gpus, mode='eval')
 
 
     # # unconditional sampling score

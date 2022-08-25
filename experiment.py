@@ -1,6 +1,9 @@
+from cgi import print_arguments
+from codecs import ascii_encode
 import copy
 import json
 import os
+from pydoc import describe
 import re
 
 import numpy as np
@@ -13,6 +16,7 @@ from pytorch_lightning.callbacks import *
 from torch import nn
 from torch.cuda import amp
 from torch.distributions import Categorical
+from scipy.spatial.distance import cdist
 from torch.optim.optimizer import Optimizer
 from torch.utils.data.dataset import ConcatDataset, TensorDataset
 from torchvision.utils import make_grid, save_image
@@ -26,6 +30,7 @@ from renderer import *
 
 from sklearn.metrics import confusion_matrix
 from uda import network
+from uda.data_list import ImageList, ImageList_idx
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -679,53 +684,27 @@ class LitModel(pl.LightningModule):
         per_rank = n // world_size
         return x[rank * per_rank:(rank + 1) * per_rank]
 
-    def set_netB_C(self,):
+    def set_net(self,):
+        if self.conf.Fnet[0:3] == 'res':
+            netF = network.ResBase(res_name=self.conf.Fnet).cuda()
+        elif self.conf.Fnet[0:3] == 'vgg':
+            netF = network.VGGBase(vgg_name=self.conf.Fnet).cuda()  
 
         netB = network.feat_bootleneck(type=self.conf.classifier, feature_dim=2048, bottleneck_dim=self.conf.bottleneck).cuda()
         modelpath = self.conf.output_dir_src + '/source_B.pt'   
         netB.load_state_dict(torch.load(modelpath))
         netB.eval()
         self.netB = netB
-
+        modelpath = self.conf.output_dir_src + '/source_F.pt'   
+        netF.load_state_dict(torch.load(modelpath))
+        netF.eval()
+        self.netF = netF
         netC = network.feat_classifier(type=self.conf.layer, class_num = self.conf.class_num, bottleneck_dim=self.conf.bottleneck).cuda()
         modelpath = self.conf.output_dir_src + '/source_C.pt'    
         netC.load_state_dict(torch.load(modelpath))
         netC.eval()
         self.netC = netC
 
-    def cal_acc(self, loader, flag=False):
-        self.set_netB_C
-        start_test = True
-        with torch.no_grad():
-            # iter_test = iter(loader)
-            for _, data in tqdm(enumerate(loader), total=len(loader)):
-                # data = iter_test.next()
-                print(f'data.shape:{data.shape}')
-                inputs = data[0]
-                print(f'input_size.shape:{inputs.shape}')
-                labels = data[1]
-                inputs = inputs.cuda()
-                outputs = self.netC(self.netB(inputs))
-                if start_test:
-                    all_output = outputs.float().cpu()
-                    all_label = labels.float()
-                    start_test = False
-                else:
-                    all_output = torch.cat((all_output, outputs.float().cpu()), 0)
-                    all_label = torch.cat((all_label, labels.float()), 0)
-        _, predict = torch.max(all_output, 1)
-        accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
-        # mean_ent = torch.mean(loss.Entropy(nn.Softmax(dim=1)(all_output))).cpu().data.item()
-        if flag:
-            matrix = confusion_matrix(all_label, torch.squeeze(predict).float())
-            matrix = matrix[np.unique(all_label).astype(int),:]
-            acc = matrix.diagonal()/matrix.sum(axis=1) * 100
-            aacc = acc.mean()
-            aa = [str(np.round(i, 2)) for i in acc]
-            acc = ' '.join(aa)
-            return aacc, acc
-        else:
-            return accuracy*100, _
 
     def test_step(self, batch, *args, **kwargs):
         """
@@ -779,27 +758,31 @@ class LitModel(pl.LightningModule):
                         latent_sampler = self.conf._make_latent_diffusion_conf(
                             T=T_latent, denoised_T = self.conf.denoised_T).make_sampler()
                     self.ema_model.eval()
-
+                    self.set_net()
+                    args = args_config(dset = 'office-home', s=0, t=1, batch_size_eval=self.conf.batch_size_eval)
+                    dset_loaders = data_load(args)
+                    self.obtain_label(dset_loaders[self.conf.eval_domain], 
+                        netB=self.netB, netF=self.netF, netC=self.netC, args=args,latent_sampler=latent_sampler)
                     # load the target domain latent samples
-                    if self.conf.target_latent_path is not None:
-                        print(f'loading latent latent stats from{self.conf.target_latent_path} ...')
-                        state = torch.load(self.conf.target_latent_path)
-                        loader = state['conds']
-                    target_latent_loader = DataLoader(loader,batch_size=self.conf.batch_size_eval,shuffle=False)
-                    all_out = []
-                    for target_latent in tqdm(target_latent_loader, total=len(target_latent_loader), desc='eval_target_domain'):
-                        target_latent = target_latent.cuda()
-                        out = latent_sampler.sample(model=self.ema_model.latent_net,
-                            noise=target_latent,
-                            clip_denoised=self.conf.latent_clip_sample,)
-                        all_out.append(out)
-                    all_out = torch.cat(all_out, dim=0)
-                    torch.save(all_out, f'checkpoints/{self.conf.name}_target/C_latent_diffusion_{self.conf.denoised_T}_{T_latent}.pkl')
-                    self.set_netB_C()
-                    all_out = DataLoader(all_out, batch_size=self.conf.batch_size_eval, 
-                        shuffle=False, drop_last=False)
-                    acc_tar, _ = self.cal_acc(all_out, False)
-                    print(f'acc_tar: {acc_tar}')
+                    # if self.conf.target_latent_path is not None:
+                    #     print(f'loading latent latent stats from{self.conf.target_latent_path} ...')
+                    #     state = torch.load(self.conf.target_latent_path)
+                    #     loader = state['conds']
+                    # target_latent_loader = DataLoader(loader,batch_size=self.conf.batch_size_eval,shuffle=False)
+                    # all_out = []
+                    # for target_latent in tqdm(target_latent_loader, total=len(target_latent_loader), desc='eval_target_domain'):
+                    #     target_latent = target_latent.cuda()
+                    #     out = latent_sampler.sample(model=self.ema_model.latent_net,
+                    #         noise=target_latent,
+                    #         clip_denoised=self.conf.latent_clip_sample,)
+                    #     all_out.append(out)
+                    # all_out = torch.cat(all_out, dim=0)
+                    # torch.save(all_out, f'checkpoints/{self.conf.name}_target/C_latent_diffusion_{self.conf.denoised_T}_{T_latent}.pkl')
+
+                    # all_out = DataLoader(all_out, batch_size=self.conf.batch_size_eval, 
+                    #     shuffle=False, drop_last=False)
+                    # acc_tar, _ = self.cal_acc(all_out, target_latent_loader, False)
+                    # print(f'acc_tar: {acc_tar}')
         """
         "infer+render" = predict the latent variables using the encoder on the whole dataset
         THIS ALSO GENERATE CORRESPONDING IMAGES
@@ -947,6 +930,65 @@ class LitModel(pl.LightningModule):
                 for k, v in score.items():
                     self.log(f'{k}_inv_ema_T{T}', v)
 
+    def obtain_label(self, loader, netF, netB, netC, args,latent_sampler):
+        start_test = True
+        with torch.no_grad():
+            iter_test = iter(loader)
+            for _ in tqdm(range(len(loader))):
+                data = iter_test.next()
+                inputs = data[0]
+                labels = data[1]
+                inputs = inputs.cuda()
+                feas = netF(inputs)
+                feas = latent_sampler.sample(model=self.ema_model.latent_net,
+                                noise=feas,
+                                clip_denoised=self.conf.latent_clip_sample,)
+                outputs = netC(netB(feas))
+                if start_test:
+                    all_fea = feas.float().cpu()
+                    all_output = outputs.float().cpu()
+                    all_label = labels.float()
+                    start_test = False
+                else:
+                    all_fea = torch.cat((all_fea, feas.float().cpu()), 0)
+                    all_output = torch.cat((all_output, outputs.float().cpu()), 0)
+                    all_label = torch.cat((all_label, labels.float()), 0)
+
+        all_output = nn.Softmax(dim=1)(all_output)
+        ent = torch.sum(-all_output * torch.log(all_output + 1e-5), dim=1)
+        unknown_weight = 1 - ent / np.log(args.class_num)
+        _, predict = torch.max(all_output, 1)
+
+        accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
+        if args.distance == 'cosine':
+            all_fea = torch.cat((all_fea, torch.ones(all_fea.size(0), 1)), 1)
+            all_fea = (all_fea.t() / torch.norm(all_fea, p=2, dim=1)).t()
+
+        all_fea = all_fea.float().cpu().numpy()
+        K = all_output.size(1)
+        aff = all_output.float().cpu().numpy()
+
+        for _ in range(2):
+            initc = aff.transpose().dot(all_fea)
+            initc = initc / (1e-8 + aff.sum(axis=0)[:,None])
+            cls_count = np.eye(K)[predict].sum(axis=0)
+            labelset = np.where(cls_count>args.threshold)
+            labelset = labelset[0]
+
+            dd = cdist(all_fea, initc[labelset], args.distance)
+            pred_label = dd.argmin(axis=1)
+            predict = labelset[pred_label]
+
+            aff = np.eye(K)[predict]
+
+        acc = np.sum(predict == all_label.float().numpy()) / len(all_fea)
+        log_str = 'Accuracy = {:.2f}% -> {:.2f}%'.format(accuracy * 100, acc * 100)
+
+        # args.out_file.write(log_str + '\n')
+        # args.out_file.flush()
+        print(log_str+'\n')
+
+        return predict.astype('int')
 
 def ema(source, target, decay):
     '''
@@ -1075,3 +1117,124 @@ def train(conf: TrainConfig, gpus, nodes=1, mode: str = 'train'):
 def evalutaion(conf, model):
     # load the target latent dataset
     target_latent_dataset = torch.load(conf.target_latent_dataset)
+
+
+def data_load(args,): 
+    ## prepare data
+    dsets = {}
+    dset_loaders = {}
+    train_bs = args.batch_size
+    txt_tar = open(args.t_dset_path).readlines()
+    txt_test = open(args.test_dset_path).readlines()
+
+    txt_src = open(args.s_dset_path).readlines()
+    txt_test = open(args.test_dset_path).readlines()
+    dsize = len(txt_src)
+    tr_size = int(0.9*dsize)
+
+    dsets["source"] = ImageList(txt_src, transform=image_train())
+    dset_loaders["source"] = DataLoader(dsets["source"], batch_size=train_bs, shuffle=True, 
+        num_workers=args.worker, drop_last=False)
+
+    dsets["target"] = ImageList_idx(txt_tar, transform=image_train())
+    dset_loaders["target"] = DataLoader(dsets["target"], batch_size=train_bs, shuffle=True, 
+        num_workers=args.worker, drop_last=False)
+    dsets["target_te"] = ImageList_idx(txt_tar, transform=image_test())
+    dset_loaders["target_te"] = DataLoader(dsets["target_te"], batch_size=train_bs*3, shuffle=False, 
+        num_workers=args.worker, drop_last=False)
+
+    dsets["test"] = ImageList_idx(txt_test, transform=image_test())
+    dset_loaders["test"] = DataLoader(dsets["test"], batch_size=train_bs*3, shuffle=False, 
+        num_workers=args.worker, drop_last=False)
+
+    return dset_loaders
+
+# def cal_acc(self, loader1, loader2,flag=False):
+#     self.set_netB_C
+#     start_test = True
+#     with torch.no_grad():
+#         iter_test1 = iter(loader1)
+#         iter_test2 = iter(loader2)
+#         assert len(loader1) == len(loader2)
+#         for i in range(len(loader1)):
+#             inputs = iter_test1.next()
+#             data = iter_test2.next()
+#             labels = data[1]
+#             print(f'inputs: {inputs.size()}')
+#             print(f'labels: {labels.size()}')
+#             assert inputs[0].shape[0] == labels.shape[0]
+#             inputs = inputs.cuda()
+#             outputs = self.netC(self.netB(inputs))
+#             if start_test:
+#                 all_output = outputs.float().cpu()
+#                 all_label = labels.float()
+#                 start_test = False
+#             else:
+#                 all_output = torch.cat((all_output, outputs.float().cpu()), 0)
+#                 all_label = torch.cat((all_label, labels.float()), 0)
+#     print(f'all_output: {all_output.size()}')
+#     print(f'all_label: {all_label.size()}')
+#     _, predict = torch.max(all_output, 1)
+#     print(f'predict: {predict.size()}')
+#     accuracy = torch.sum(torch.squeeze(predict).float() == all_label).item() / float(all_label.size()[0])
+#     # mean_ent = torch.mean(loss.Entropy(nn.Softmax(dim=1)(all_output))).cpu().data.item()
+#     if flag:
+#         matrix = confusion_matrix(all_label, torch.squeeze(predict).float())
+#         matrix = matrix[np.unique(all_label).astype(int),:]
+#         acc = matrix.diagonal()/matrix.sum(axis=1) * 100
+#         aacc = acc.mean()
+#         aa = [str(np.round(i, 2)) for i in acc]
+#         acc = ' '.join(aa)
+#         return aacc, acc
+#     else:
+#         return accuracy*100, _
+
+
+def args_config(dset, s, t, batch_size_eval):
+    import argparse
+    args = argparse.Namespace()
+    folder = './data/'
+    args.batch_size = batch_size_eval
+    args.dset = dset
+    if args.dset == 'office-home':
+        names = ['Art', 'Clipart', 'Product', 'RealWorld']
+        args.class_num = 65 
+    elif args.dset == 'office':
+        names = ['amazon', 'dslr', 'webcam']
+        args.class_num = 31
+    elif args.dset == 'VISDA-C':
+        names = ['train', 'validation']
+        args.class_num = 12
+        args.lr = 1e-3
+    args.dsets = ['source', 'target', 'test']
+    args.s = s
+    args.t = t
+    args.s_dset_path = folder + args.dset + '/' + names[args.s] + '_list.txt'
+    args.t_dset_path = folder + args.dset + '/' + names[args.t] + '_list.txt'
+    args.test_dset_path = folder + args.dset + '/' + names[args.t] + '_list.txt'
+    args.worker = 1
+    args.epsilon = 1e-5
+    args.distance = 'cosine'
+    args.threshold = 0
+    return args
+
+def image_train(resize_size=256, crop_size=224, alexnet=False):
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                   std=[0.229, 0.224, 0.225])
+    return  transforms.Compose([
+        transforms.Resize((resize_size, resize_size)),
+        transforms.RandomCrop(crop_size),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        normalize
+    ])
+
+def image_test(resize_size=256, crop_size=224, alexnet=False):
+    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                   std=[0.229, 0.224, 0.225])
+    return  transforms.Compose([
+        transforms.Resize((resize_size, resize_size)),
+        transforms.CenterCrop(crop_size),
+        transforms.ToTensor(),
+        normalize
+    ])

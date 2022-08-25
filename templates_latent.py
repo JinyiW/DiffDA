@@ -145,12 +145,12 @@ def DA_latent():
     conf = latent_diffusion128_config(conf)
     conf = latent_128_batch_size(conf)
     conf = latent_mlp_2048_norm_10layers(conf)
-    conf.denoised_T = 4
     conf.total_samples = 2304_000
     conf.latent_beta_scheduler = 'const0.008'
     conf.latent_loss_type = LossType.l1
     conf.batch_size_eval = 16
     conf.name = 'DA'
+    conf.eval_domain = 'target_te'
 
     # DA net B C config
     conf.classifier = "bn"
@@ -158,10 +158,11 @@ def DA_latent():
     conf.layer = 'wn'
     conf.class_num = 65
     conf.output_dir_src = 'uda/ckps/source/uda/office-home/A'
+    conf.Fnet = 'resnet50'
 
 
     conf.source_latent_path = f'checkpoints/{conf.name}_source/latent.pkl'
-    conf.target_latent_path = f'checkpoints/{conf.name}_target/C_latent.pkl'
+    # conf.target_latent_path = f'checkpoints/{conf.name}_target/C_latent.pkl'
     return conf
 
 
